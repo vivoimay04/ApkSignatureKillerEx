@@ -8,31 +8,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -fvisibility=hidden")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -fvisibility=hidden")
 
-# ── Dobby: collect Android-relevant sources ──
-file(GLOB_RECURSE DOBBY_SOURCES
-    src/main/c/dobby/source/*.c
-    src/main/c/dobby/source/*.cc
-    src/main/c/dobby/source/*.cpp
-    src/main/c/dobby/source/*.S)
-
-# Compatible foreach+if filter (works with any CMake version)
-set(DOBBY_EXCLUDE_REGEX
-    "KernelMode|windows|darwin|test|example|lighthouse|macho|deprecated|FunctionWrapper"
-    "clear-cache-tool-arm-dummy|clear-cache-tool-arm64-dummy|closure-bridge-template-arm"
-)
-set(FILTERED_SOURCES "")
-foreach(F ${DOBBY_SOURCES})
-    set(KEEP TRUE)
-    foreach(E ${DOBBY_EXCLUDE_REGEX})
-        if(F MATCHES ${E})
-            set(KEEP FALSE)
-            break()
-        endif()
-    endforeach()
-    if(KEEP)
-        list(APPEND FILTERED_SOURCES ${F})
-    endif()
-endforeach()
+# ── Dobby: built as a static library (handles its own include paths) ──
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(Plugin.SymbolResolver ON CACHE BOOL "" FORCE)
+add_subdirectory(src/main/c/dobby dobby_build)
 
 add_library(SignatureKiller SHARED
     src/main/c/mt_jni.c
@@ -42,8 +22,7 @@ add_library(SignatureKiller SHARED
     src/main/c/xh_elf.c
     src/main/c/xh_log.c
     src/main/c/xh_util.c
-    src/main/c/xh_version.c
-    ${FILTERED_SOURCES})
+    src/main/c/xh_version.c)
 
 target_include_directories(SignatureKiller PRIVATE
     src/main/c/dobby/include)
@@ -53,4 +32,5 @@ find_library(dl-lib dl)
 
 target_link_libraries(SignatureKiller
     ${log-lib}
-    ${dl-lib})
+    ${dl-lib}
+    dobby_static)
