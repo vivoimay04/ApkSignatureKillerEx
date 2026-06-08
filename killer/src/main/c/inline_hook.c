@@ -150,124 +150,57 @@ static jint my_RegisterNatives(JNIEnv *env, jclass clazz,
 }
 
 static void setup_RegisterNatives_hook(JNIEnv *env) {
-    if (g_real_RegisterNatives) return;  // already set up
+    if (g_real_RegisterNatives) return;
 
     g_env = env;
 
-    // The JNINativeInterface is at (*env) or env->functions depending on ABI
-    // env is JNIEnv*, *env is JNINativeInterface
-    struct JNINativeInterface *table = (struct JNINativeInterface *)(*env);
-
-    // We need to find the RegisterNatives entry. The offset varies by Android
-    // version. Instead of hardcoding, we scan for it:
-    // RegisterNatives is the ONLY function that takes (JNIEnv*, jclass, const JNINativeMethod*, jint)
-    // We can identify it by the function signature at runtime.
-    //
-    // Simpler: ART's JNI function table is stable across versions for the same
-    // architecture. On ARM64 Android (all modern versions), find it at a known
-    // offset. We use a heuristic: scan for a function pointer that lands in
-    // libart.so and has the right calling convention.
-    //
-    // Even simpler: just find the table, make it writable, and patch entry by
-    // scanning for the existing function pointer.
-
-    // On Android, JNINativeInterface starts with reserved[0..3] (4 pointers),
-    // then GetVersion, FindClass, etc.
-    // RegisterNatives is typically at offset ~215-220 entries.
-    // But we can find it by looking for the function pattern.
-
-    // Simplest approach: make the whole table writable, then patch ALL entries
-    // to our proxy that forwards to the original. This is complex.
-    //
-    // Alternative: Just use the known offset from the JNI spec:
-    // RegisterNatives is at index 215 in the standard JNI function table
-    // (Android uses the same layout).
-
-    // On Android ARM64, the function table is an array of void* pointers.
-    // Each entry is 8 bytes. The table pointer IS the array.
-    // Let's find RegisterNatives by iterating until we find a function in libart.so
-    // that matches the pattern of our known RegisterNatives.
-
-    // Actually, let me just try the approach of patching the table entry directly.
-    // We'll use a brute force scan: find the offset of RegisterNatives by looking
-    // for any function pointer that's within libart.so (system library).
-
-    // But the SIMPLEST way: just replace the entire table entry for RegisterNatives.
-    // We know the function signature: 4 pointer-sized args (env, clazz, methods, nMethods)
-    // and returns jint.
-
-    // On Android jni.h, RegisterNatives is after ~215 entries.
-    // Let me use a dynamic approach: find RegisterNatives by calling it normally
-    // and seeing which table entry it uses.
-
-    // Wait, I can just USE the env directly. But I need the actual function pointer,
-    // not the table entry.
-
-    // OK let me think clearly. We have (*env)->RegisterNatives which resolves to
-    // the function pointer via the table. But I need to MODIFY the table entry
-    // so that (*env)->RegisterNatives points to MY function.
-
-    // The table is at the address (*env) (which is JNINativeInterface* = void**)
-    // Each entry is a function pointer.
-    // I need to find WHICH entry is RegisterNatives.
-
-    // Approach: use the C struct to get the offset
-    // Since JNINativeInterface is a struct, we can compute the offset by:
-    // offsetof(struct JNINativeInterface, RegisterNatives)
-
-    // But we can't use offsetof easily in C for internal structs.
-    // Instead, manually calculate.
-
-    // Actually, the SIMPLEST approach: just scan for the RegisterNatives
-    // function signature using the existing table.
-
-    // We can identify RegisterNatives by its return type (jint) and arg types.
-    // But in the function table, all entries just look like function pointers.
-
-    // Let me use a different method: Don't modify the table.
-    // Instead, get the RegisterNatives function address from the table,
-    // then use our inline hook on that function address itself.
-    // This works even if the function is in libart.so, because we use
-    // mprotect + absolute jump.
-
-    // Get the actual RegisterNatives function pointer
-    void *regPtr = (void *)((*env)->RegisterNatives);
-    LOGI("RegisterNatives function at %p (libart.so)", regPtr);
-
-    // Save it for calling later
-    g_real_RegisterNatives = (RegisterNatives_t)regPtr;
-
-    // Install inline hook on RegisterNatives in libart.so
-    // Save original first instruction
-    uint32_t orig[4];
-    memcpy(orig, regPtr, 16);
-
-    // Allocate trampoline
-    long page_size = sysconf(_SC_PAGESIZE);
-    void *tramp = mmap(NULL, page_size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (tramp == MAP_FAILED) { LOGE("mmap tramp failed"); return; }
-
-    // Build trampoline: original 16 bytes + abs jump back to regPtr+16
-    memcpy(tramp, orig, 16);
-    emit_abs_jump((char *)tramp + 16, (char *)regPtr + 16);
-    g_real_RegisterNatives = (RegisterNatives_t)tramp;
-
-    // Make libart's RegisterNatives page writable
-    void *page = (void *)((uintptr_t)regPtr & ~(page_size - 1));
-    if (mprotect(page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        LOGE("mprotect on libart.so RegisterNatives FAILED (expected on Android 10+)");
-        snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_mprotect_FAIL");
-        munmap(tramp, page_size);
-        g_real_RegisterNatives = (RegisterNatives_t)regPtr;  // restore
-        LOGW("RegisterNatives hook failed, falling back to dlsym polling only");
+    // The JNINativeInterface table is at (*env).
+    // It's an array of function pointers (void*). RegisterNatives is at
+    // a known offset (around ~215 in standard JNI, call it index N).
+    // We find it by scanning the table for the current RegisterNatives pointer.
+    void **table = (void **)(void *)(*env);
+    void *regFunc = (void *)((*env)->RegisterNatives);
+    
+    int regIdx = -1;
+    // JNI function table has ~250 entries on modern Android
+    for (int i = 0; i < 250; i++) {
+        if (table[i] == regFunc) {
+            regIdx = i;
+            break;
+        }
+    }
+    
+    if (regIdx < 0) {
+        LOGE("Could not find RegisterNatives in JNINativeInterface table");
+        snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_table_NOT_FOUND");
         return;
     }
-
-    // Patch RegisterNatives to our hook
-    emit_abs_jump(regPtr, (void *)my_RegisterNatives);
-    LOGI("RegisterNatives hook installed!");
+    
+    LOGI("Found RegisterNatives at table[%d] = %p", regIdx, regFunc);
+    
+    // The table is ART data memory. Make it writable.
+    long page_size = sysconf(_SC_PAGESIZE);
+    void *table_page = (void *)((uintptr_t)table & ~(page_size - 1));
+    
+    if (mprotect(table_page, page_size, PROT_READ | PROT_WRITE) != 0) {
+        LOGE("mprotect on JNINativeInterface table FAILED");
+        snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_table_mprotect_FAIL");
+        return;
+    }
+    
+    // Save original RegisterNatives
+    g_real_RegisterNatives = (RegisterNatives_t)regFunc;
+    
+    // Replace table entry with our hook
+    table[regIdx] = (void *)my_RegisterNatives;
+    
+    // Restore permissions
+    mprotect(table_page, page_size, PROT_READ);
+    
+    LOGI("RegisterNatives table hook installed! idx=%d", regIdx);
+    snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_table_hook_idx=%d", regIdx);
 }
+
 
 // ── Library detection (cross-namespace via /proc/self/maps) ──
 static int is_libtest_loaded(void) {
