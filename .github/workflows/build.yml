@@ -13,50 +13,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Java 11
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '11'
+          java-version: '17'
 
       - name: Setup Android SDK
         run: |
-          # Unset conflicting env vars & use the runner's built-in SDK
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          SDK_ROOT="/usr/local/lib/android/sdk"
+          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=" >> $GITHUB_ENV
-          
-          # Install missing components with Java 17 (sdkmanager requires Java 17+)
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -f "$SDKMANAGER" ]; then
-            # Fallback: find sdkmanager
-            SDKMANAGER=$(find /usr/local/lib/android/sdk -name "sdkmanager" -type f 2>/dev/null | head -1)
-          fi
-          
-          echo "Using sdkmanager: $SDKMANAGER"
-          ls -la "$(dirname $SDKMANAGER)" 2>/dev/null || echo "No cmdline-tools found"
-          
-          # Check what's already installed
-          echo "Already installed platforms:"
-          ls /usr/local/lib/android/sdk/platforms/ 2>/dev/null || echo "none"
-          echo "Already installed NDK:"
-          ls /usr/local/lib/android/sdk/ndk/ 2>/dev/null || echo "none"
-          echo "Already installed build-tools:"
-          ls /usr/local/lib/android/sdk/build-tools/ 2>/dev/null || echo "none"
 
-      - name: Install missing SDK components
+          # List what's already available
+          echo "=== Pre-installed ==="
+          ls "$SDK_ROOT/platforms/" 2>/dev/null || echo "no platforms"
+          ls "$SDK_ROOT/build-tools/" 2>/dev/null || echo "no build-tools"
+          ls "$SDK_ROOT/ndk/" 2>/dev/null || echo "no ndk"
+          ls "$SDK_ROOT/cmake/" 2>/dev/null || echo "no cmake"
+
+      - name: Install project dependencies
         run: |
-          # Use Java 17 for sdkmanager
-export JAVA_HOME=$JAVA_HOME_17_X64
-yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager \
-  "platforms;android-32" \
-  "build-tools;33.0.2" \
-  "ndk;24.0.8215888" \
-  "cmake;3.22.1" 2>&1 | tail -5
+          SDK_ROOT="/usr/local/lib/android/sdk"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
 
-      - name: Build
+          # Install only what's missing
+          $SDKMANAGER --list 2>/dev/null | grep -E "android-32|ndk;24|build-tools;33" || true
+
+          yes | $SDKMANAGER \
+            "platforms;android-32" \
+            "build-tools;33.0.2" \
+            "ndk;24.0.8215888" \
+            "cmake;3.22.1" 2>&1 | tail -5
+
+      - name: Build with Gradle
         run: |
           chmod +x gradlew
-          unset ANDROID_SDK_ROOT
           ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
