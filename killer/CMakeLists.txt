@@ -8,11 +8,49 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -fvisibility=hidden")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -fvisibility=hidden")
 
-# ── Dobby: built as a static library (handles its own include paths) ──
-set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
-set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
-set(Plugin.SymbolResolver ON CACHE BOOL "" FORCE)
-add_subdirectory(src/main/c/dobby dobby_build)
+# ── Dobby source dir ──
+set(DOBBY src/main/c/dobby)
+
+# ── Collect all Dobby source files ──
+file(GLOB_RECURSE DOBBY_SOURCES
+    ${DOBBY}/source/*.c ${DOBBY}/source/*.cc ${DOBBY}/source/*.cpp ${DOBBY}/source/*.S
+    ${DOBBY}/builtin-plugin/*.c ${DOBBY}/builtin-plugin/*.cc ${DOBBY}/builtin-plugin/*.cpp)
+
+# ── Filter out non-Android files ──
+foreach(F ${DOBBY_SOURCES})
+    set(KEEP TRUE)
+    # Exclude platform-specific: windows, darwin (macOS), kernel-mode, test, example
+    foreach(E "windows" "darwin" "macho" "/pe/" "KernelMode" "test" "example"
+            "deprecated" "ApplicationEventMonitor" "SupervisorCallMonitor")
+        if(F MATCHES ".*${E}.*")
+            set(KEEP FALSE)
+        endif()
+    endforeach()
+    # Exclude dummy/template files
+    foreach(E "clear-cache-tool-arm-dummy" "clear-cache-tool-arm64-dummy" "closure-bridge-template-arm")
+        if(F MATCHES ".*${E}.*")
+            set(KEEP FALSE)
+        endif()
+    endforeach()
+    if(KEEP)
+        list(APPEND FILTERED ${F})
+    endif()
+endforeach()
+
+message(STATUS "Dobby source files: ${FILTERED}")
+
+# ── Dobby include paths (mirroring Dobby's own CMakeLists.txt) ──
+set(DOBBY_INCLUDES
+    ${DOBBY}                              # .
+    ${DOBBY}/include                      # ./include
+    ${DOBBY}/source                       # ./source
+    ${DOBBY}/source/dobby                 # source/dobby
+    ${DOBBY}/external                     # ./external
+    ${DOBBY}/external/logging             # ./external/logging
+    ${DOBBY}/builtin-plugin               # ./builtin-plugin
+    ${DOBBY}/builtin-plugin/SymbolResolver
+    ${DOBBY}/source/Backend/UserMode      # for MultiThreadSupport etc.
+)
 
 add_library(SignatureKiller SHARED
     src/main/c/mt_jni.c
@@ -22,15 +60,14 @@ add_library(SignatureKiller SHARED
     src/main/c/xh_elf.c
     src/main/c/xh_log.c
     src/main/c/xh_util.c
-    src/main/c/xh_version.c)
+    src/main/c/xh_version.c
+    ${FILTERED})
 
-target_include_directories(SignatureKiller PRIVATE
-    src/main/c/dobby/include)
+target_include_directories(SignatureKiller PRIVATE ${DOBBY_INCLUDES})
 
 find_library(log-lib log)
 find_library(dl-lib dl)
 
 target_link_libraries(SignatureKiller
     ${log-lib}
-    ${dl-lib}
-    dobby_static)
+    ${dl-lib})
