@@ -28,6 +28,13 @@
 extern const char *apkPath__;
 extern const char *repPath__;
 
+// ── Hook status (readable from Java via JNI) ──
+static char g_hook_status[256] = "not_attempted";
+
+const char* get_hook_status(void) {
+    return g_hook_status;
+}
+
 // ── ARM64 absolute jump: LDR X17, [PC, #8]; BR X17; <8-byte target> ──
 static void emit_abs_jump(void *where, void *target) {
     uint32_t *code = (uint32_t *)where;
@@ -93,6 +100,7 @@ static void install_hook_on(void *target) {
 
     emit_abs_jump(target, (void *)my_handler);
     g_hook_installed = 1;
+    snprintf(g_hook_status, sizeof(g_hook_status), "installed_trampoline=%p", trampoline);
     LOGI("Inline hook installed! trampoline=%p", trampoline);
 }
 
@@ -102,9 +110,11 @@ static void try_dlsym(void) {
     void *target = dlsym(RTLD_DEFAULT, "Java_bin_mt_test_MainActivity_openAt");
     if (target) {
         LOGI("Method 1 success: found via dlsym at %p", target);
+        snprintf(g_hook_status, sizeof(g_hook_status), "dlsym_OK_%p", target);
         install_hook_on(target);
     } else {
         LOGW("Method 1 failed: symbol not exported");
+        snprintf(g_hook_status, sizeof(g_hook_status), "dlsym_FAIL");
     }
 }
 
@@ -129,6 +139,7 @@ static jint my_RegisterNatives(JNIEnv *env, jclass clazz,
         for (int i = 0; i < nMethods; i++) {
             if (strcmp(methods[i].name, "openAt") == 0) {
                 LOGI("Method 2: RegisterNatives captured openAt at %p", methods[i].fnPtr);
+                snprintf(g_hook_status, sizeof(g_hook_status), "RegisterNatives_OK_%p", methods[i].fnPtr);
                 install_hook_on(methods[i].fnPtr);
                 break;
             }
@@ -246,6 +257,7 @@ static void setup_RegisterNatives_hook(JNIEnv *env) {
     void *page = (void *)((uintptr_t)regPtr & ~(page_size - 1));
     if (mprotect(page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
         LOGE("mprotect on libart.so RegisterNatives FAILED (expected on Android 10+)");
+        snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_mprotect_FAIL");
         munmap(tramp, page_size);
         g_real_RegisterNatives = (RegisterNatives_t)regPtr;  // restore
         LOGW("RegisterNatives hook failed, falling back to dlsym polling only");

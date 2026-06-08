@@ -70,3 +70,11 @@ Java_bin_mt_signature_KillerApplication_hookApkPath(JNIEnv *env, __attribute__((
     // Install custom inline hook on SVC-based openAt
     inline_hook_init(env);
 }
+
+extern const char* get_hook_status(void);
+
+JNIEXPORT jstring JNICALL
+Java_bin_mt_test_MainActivity_getHookStatus(JNIEnv *env, __attribute__((unused)) jclass clazz) {
+    const char *status = get_hook_status();
+    return (*env)->NewStringUTF(env, status ? status : "null");
+}

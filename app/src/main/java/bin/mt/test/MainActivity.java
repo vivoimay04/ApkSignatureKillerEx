@@ -60,6 +60,7 @@ public class MainActivity extends Activity {
         append(sb, "From API: ", signatureFromAPI, signatureExpected.equals(signatureFromAPI) ? Color.BLUE : Color.RED);
         append(sb, "From APK: ", signatureFromAPK, signatureExpected.equals(signatureFromAPK) ? Color.BLUE : Color.RED);
         append(sb, "From SVC: ", signatureFromSVC, signatureExpected.equals(signatureFromSVC) ? Color.BLUE : Color.RED);
+        append(sb, "Hook: ",    getHookStatus(), Color.MAGENTA);
 
         // 当然SVC并非绝对安全，只是相对而言更加可靠，实际运用还需结合更多的手段
 
@@ -139,5 +140,6 @@ public class MainActivity extends Activity {
     }
 
     private static native int openAt(String path);
+    private static native String getHookStatus();
 
 }
