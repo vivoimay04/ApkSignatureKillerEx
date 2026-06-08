@@ -19,20 +19,34 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK dependencies
+      - name: Setup Android SDK (manual)
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          # Download cmdline-tools
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd $HOME/android-sdk/cmdline-tools
+          curl -sL -o cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdline-tools.zip
+          mv cmdline-tools latest
+          rm cmdline-tools.zip
+          
+          # Set ANDROID_HOME
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+
+      - name: Accept licenses & install SDK
+        run: |
+          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android-sdk \
             "platforms;android-32" \
             "build-tools;33.0.2" \
             "ndk;24.0.8215888" \
-            "cmake;3.22.1" 2>&1 | tail -3
+            "cmake;3.22.1" 2>&1 | tail -5
 
       - name: Build
         run: |
           chmod +x gradlew
+          export ANDROID_HOME=$HOME/android-sdk
           ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
