@@ -19,34 +19,44 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
-      - name: Setup Android SDK (manual)
+      - name: Setup Android SDK
         run: |
-          # Download cmdline-tools
-          mkdir -p $HOME/android-sdk/cmdline-tools
-          cd $HOME/android-sdk/cmdline-tools
-          curl -sL -o cmdline-tools.zip \
-            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q cmdline-tools.zip
-          mv cmdline-tools latest
-          rm cmdline-tools.zip
+          # Unset conflicting env vars & use the runner's built-in SDK
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=" >> $GITHUB_ENV
           
-          # Set ANDROID_HOME
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          # Install missing components with Java 17 (sdkmanager requires Java 17+)
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -f "$SDKMANAGER" ]; then
+            # Fallback: find sdkmanager
+            SDKMANAGER=$(find /usr/local/lib/android/sdk -name "sdkmanager" -type f 2>/dev/null | head -1)
+          fi
+          
+          echo "Using sdkmanager: $SDKMANAGER"
+          ls -la "$(dirname $SDKMANAGER)" 2>/dev/null || echo "No cmdline-tools found"
+          
+          # Check what's already installed
+          echo "Already installed platforms:"
+          ls /usr/local/lib/android/sdk/platforms/ 2>/dev/null || echo "none"
+          echo "Already installed NDK:"
+          ls /usr/local/lib/android/sdk/ndk/ 2>/dev/null || echo "none"
+          echo "Already installed build-tools:"
+          ls /usr/local/lib/android/sdk/build-tools/ 2>/dev/null || echo "none"
 
-      - name: Accept licenses & install SDK
+      - name: Install missing SDK components
         run: |
-          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android-sdk \
-            "platforms;android-32" \
-            "build-tools;33.0.2" \
-            "ndk;24.0.8215888" \
-            "cmake;3.22.1" 2>&1 | tail -5
+          # Use Java 17 for sdkmanager
+export JAVA_HOME=$JAVA_HOME_17_X64
+yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager \
+  "platforms;android-32" \
+  "build-tools;33.0.2" \
+  "ndk;24.0.8215888" \
+  "cmake;3.22.1" 2>&1 | tail -5
 
       - name: Build
         run: |
           chmod +x gradlew
-          export ANDROID_HOME=$HOME/android-sdk
+          unset ANDROID_SDK_ROOT
           ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
