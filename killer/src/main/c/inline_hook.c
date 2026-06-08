@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <jni.h>
+#include "xhook.h"
 #include "xh_log.h"
 
 // External paths set by hookApkPath in mt_jni.c
@@ -23,8 +24,7 @@ extern const char *repPath__;
 
 // ── ARM64 helpers ──
 
-// Encode ARM64 B (unconditional branch) instruction
-// B <offset> — range ±128MB
+// Encode ARM64 B (unconditional branch) instruction, range ±128MB
 static void emit_branch(void *from, void *to) {
     uint32_t *code = (uint32_t *)from;
     int64_t offset = (int64_t)to - (int64_t)from;
@@ -57,32 +57,23 @@ static jint my_handler(JNIEnv *env, jclass clazz, jstring path) {
     return result;
 }
 
-// ── Install the inline hook ──
+// ── Install the inline hook on Java_bin_mt_test_MainActivity_openAt ──
 
 static int g_hook_installed = 0;
 
-void inline_hook_install(const char *lib_name, const char *func_name) {
-    if (g_hook_installed) {
-        XH_LOG_WARN("InlineHook: already installed");
-        return;
-    }
+static void install_openat_hook(void) {
+    if (g_hook_installed) return;
 
-    // Resolve target function address
-    void *lib = dlopen(lib_name, RTLD_NOLOAD | RTLD_LAZY);
-    if (!lib) {
-        XH_LOG_WARN("InlineHook: %s not loaded yet, deferring", lib_name);
-        return;
-    }
-    dlclose(lib);
+    const char *func_name = "Java_bin_mt_test_MainActivity_openAt";
 
     void *target = dlsym(RTLD_DEFAULT, func_name);
     if (!target) {
-        XH_LOG_ERROR("InlineHook: cannot find %s", func_name);
+        XH_LOG_WARN("InlineHook: %s not found yet (libtest.so not loaded?)", func_name);
         return;
     }
     XH_LOG_INFO("InlineHook: found %s at %p", func_name, target);
 
-    // Read the original first instruction
+    // Save original first instruction
     uint32_t original_instr = *(volatile uint32_t *)target;
 
     // Allocate executable trampoline
@@ -95,7 +86,7 @@ void inline_hook_install(const char *lib_name, const char *func_name) {
         return;
     }
 
-    // Write trampoline: [original instr] + [B back to target+4]
+    // Trampoline: [original instr] + [B back to target+4]
     *(uint32_t *)trampoline = original_instr;
     emit_branch((char *)trampoline + 4, (char *)target + 4);
     g_original = (openAt_jni_t)trampoline;
@@ -112,15 +103,43 @@ void inline_hook_install(const char *lib_name, const char *func_name) {
     emit_branch(target, (void *)my_handler);
 
     g_hook_installed = 1;
-    XH_LOG_INFO("InlineHook: installed successfully! trampoline=%p", trampoline);
+    XH_LOG_INFO("InlineHook: installed! trampoline=%p orig_instr=0x%x", trampoline, original_instr);
+}
+
+// ── dlopen hooks to catch libtest.so loading ──
+
+static void *(*old_android_dlopen_ext)(const char *, int, const void *);
+static void *dlopen_ext_impl(const char *filename, int flags, const void *extinfo) {
+    void *handle = old_android_dlopen_ext(filename, flags, extinfo);
+    if (handle && filename && strstr(filename, "libtest.so")) {
+        XH_LOG_INFO("InlineHook: libtest.so loaded (dlopen_ext), installing hook");
+        install_openat_hook();
+    }
+    return handle;
+}
+
+static void *(*old_dlopen)(const char *, int);
+static void *dlopen_impl(const char *filename, int flags) {
+    void *handle = old_dlopen(filename, flags);
+    if (handle && filename && strstr(filename, "libtest.so")) {
+        XH_LOG_INFO("InlineHook: libtest.so loaded (dlopen), installing hook");
+        install_openat_hook();
+    }
+    return handle;
 }
 
 // ── Called from mt_jni.c's hookApkPath ──
 
 void inline_hook_init(void) {
     XH_LOG_INFO("InlineHook: init");
-    // libtest.so may not be loaded yet — caller should retry later
-    // We'll try immediately, it's OK if it fails
-    inline_hook_install("libtest.so",
-                        "Java_bin_mt_test_MainActivity_openAt");
+
+    // Hook both dlopen variants to detect when libtest.so loads
+    xhook_register(".*\\.so$", "android_dlopen_ext",
+                   (void *)dlopen_ext_impl, (void **)&old_android_dlopen_ext);
+    xhook_register(".*\\.so$", "dlopen",
+                   (void *)dlopen_impl, (void **)&old_dlopen);
+    xhook_refresh(0);
+
+    // Also try immediately in case libtest.so is already loaded
+    install_openat_hook();
 }
