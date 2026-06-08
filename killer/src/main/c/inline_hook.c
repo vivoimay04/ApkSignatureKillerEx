@@ -1,12 +1,11 @@
 /**
  * Minimal ARM64 inline hook for SVC openAt bypass.
  *
- * Overwrites the first instruction of the target function with
- * an unconditional branch (B) to our handler. A trampoline
- * executes the original instruction then branches back.
+ * Uses absolute jump (LDR X17, [PC, #8]; BR X17) which works
+ * regardless of distance between target and handler libraries.
  *
- * Works at function ENTRY level — catches calls made via SVC
- * because we patch the function itself, not the PLT/GOT.
+ * Overwrites 16 bytes (4 instructions) of the target function.
+ * Trampoline saves original 16 bytes then jumps back.
  */
 
 #include <stdio.h>
@@ -24,13 +23,17 @@ extern const char *repPath__;
 
 // ── ARM64 helpers ──
 
-// Encode ARM64 B (unconditional branch) instruction, range ±128MB
-static void emit_branch(void *from, void *to) {
-    uint32_t *code = (uint32_t *)from;
-    int64_t offset = (int64_t)to - (int64_t)from;
-    uint32_t instr = 0x14000000 | ((offset >> 2) & 0x03FFFFFF);
-    code[0] = instr;
-    __builtin___clear_cache(from, (char *)from + 4);
+// Write an absolute jump: LDR X17, [PC, #8]; BR X17; <8-byte target>
+// This is 16 bytes total and reaches any address.
+static void emit_abs_jump(void *where, void *target) {
+    uint32_t *code = (uint32_t *)where;
+    // LDR X17, [PC, #8]  — load from PC+8 (immediately after BR)
+    code[0] = 0x58000051;  // LDR X17, #8
+    // BR X17
+    code[1] = 0xD61F0220;  // BR X17
+    // Target address (8 bytes)
+    memcpy(&code[2], &target, 8);
+    __builtin___clear_cache(where, (char *)where + 16);
 }
 
 // ── Original function pointer ──
@@ -68,15 +71,16 @@ static void install_openat_hook(void) {
 
     void *target = dlsym(RTLD_DEFAULT, func_name);
     if (!target) {
-        XH_LOG_WARN("InlineHook: %s not found yet (libtest.so not loaded?)", func_name);
+        XH_LOG_WARN("InlineHook: %s not found (libtest.so not loaded?)", func_name);
         return;
     }
     XH_LOG_INFO("InlineHook: found %s at %p", func_name, target);
 
-    // Save original first instruction
-    uint32_t original_instr = *(volatile uint32_t *)target;
+    // Save original 4 instructions (16 bytes)
+    uint32_t original_code[4];
+    memcpy(original_code, target, 16);
 
-    // Allocate executable trampoline
+    // Allocate executable trampoline (32 bytes min)
     long page_size = sysconf(_SC_PAGESIZE);
     void *trampoline = mmap(NULL, page_size,
                             PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -86,9 +90,9 @@ static void install_openat_hook(void) {
         return;
     }
 
-    // Trampoline: [original instr] + [B back to target+4]
-    *(uint32_t *)trampoline = original_instr;
-    emit_branch((char *)trampoline + 4, (char *)target + 4);
+    // Build trampoline: [original 16 bytes] + [abs jump to target+16]
+    memcpy(trampoline, original_code, 16);
+    emit_abs_jump((char *)trampoline + 16, (char *)target + 16);
     g_original = (openAt_jni_t)trampoline;
 
     // Make target page writable
@@ -99,11 +103,11 @@ static void install_openat_hook(void) {
         return;
     }
 
-    // Overwrite first instruction with B to our handler
-    emit_branch(target, (void *)my_handler);
+    // Overwrite target with abs jump to our handler
+    emit_abs_jump(target, (void *)my_handler);
 
     g_hook_installed = 1;
-    XH_LOG_INFO("InlineHook: installed! trampoline=%p orig_instr=0x%x", trampoline, original_instr);
+    XH_LOG_INFO("InlineHook: installed! trampoline=%p", trampoline);
 }
 
 // ── dlopen hooks to catch libtest.so loading ──
@@ -112,7 +116,7 @@ static void *(*old_android_dlopen_ext)(const char *, int, const void *);
 static void *dlopen_ext_impl(const char *filename, int flags, const void *extinfo) {
     void *handle = old_android_dlopen_ext(filename, flags, extinfo);
     if (handle && filename && strstr(filename, "libtest.so")) {
-        XH_LOG_INFO("InlineHook: libtest.so loaded (dlopen_ext), installing hook");
+        XH_LOG_INFO("InlineHook: libtest.so loaded (dlopen_ext)");
         install_openat_hook();
     }
     return handle;
@@ -122,7 +126,7 @@ static void *(*old_dlopen)(const char *, int);
 static void *dlopen_impl(const char *filename, int flags) {
     void *handle = old_dlopen(filename, flags);
     if (handle && filename && strstr(filename, "libtest.so")) {
-        XH_LOG_INFO("InlineHook: libtest.so loaded (dlopen), installing hook");
+        XH_LOG_INFO("InlineHook: libtest.so loaded (dlopen)");
         install_openat_hook();
     }
     return handle;
@@ -133,13 +137,13 @@ static void *dlopen_impl(const char *filename, int flags) {
 void inline_hook_init(void) {
     XH_LOG_INFO("InlineHook: init");
 
-    // Hook both dlopen variants to detect when libtest.so loads
+    // Hook dlopen variants to detect when libtest.so loads
     xhook_register(".*\\.so$", "android_dlopen_ext",
                    (void *)dlopen_ext_impl, (void **)&old_android_dlopen_ext);
     xhook_register(".*\\.so$", "dlopen",
                    (void *)dlopen_impl, (void **)&old_dlopen);
     xhook_refresh(0);
 
-    // Also try immediately in case libtest.so is already loaded
+    // Try immediately in case libtest.so is already loaded
     install_openat_hook();
 }
