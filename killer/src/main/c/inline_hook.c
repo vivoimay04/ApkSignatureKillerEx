@@ -29,7 +29,7 @@ extern const char *repPath__;
 
 static void emit_abs_jump(void *where, void *target) {
     uint32_t *code = (uint32_t *)where;
-    code[0] = 0x58000051;  // LDR X17, [PC, #8]
+    code[0] = 0x4C000051;  // LDR X17, [PC, #8]
     code[1] = 0xD61F0220;  // BR X17
     memcpy(&code[2], &target, 8);
     __builtin___clear_cache(where, (char *)where + 16);
