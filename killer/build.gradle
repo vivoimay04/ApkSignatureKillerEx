@@ -14,6 +14,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags ""
+                version "3.22.1"
                 abiFilters = ["armeabi-v7a", "x86", "arm64-v8a", "x86_64"]
             }
         }
