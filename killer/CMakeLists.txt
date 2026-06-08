@@ -1,37 +1,30 @@
-# For more information about using CMake with Android Studio, read the
-# documentation: https://d.android.com/studio/projects/add-native-code.html
-
-# Sets the minimum version of CMake required to build the native library.
-
 cmake_minimum_required(VERSION 3.4.1)
+
+# Dobby inline hook (built as a static library)
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(Plugin.SymbolResolver ON CACHE BOOL "" FORCE)
+add_subdirectory(src/main/c/dobby dobby_build)
 
 set(CMAKE_C_FLAGS "-Wall -Wextra -Werror -fvisibility=hidden")
 
-add_library( # Sets the name of the library.
-        SignatureKiller
+add_library(SignatureKiller SHARED
+    src/main/c/mt_jni.c
+    src/main/c/dobby_hook.c
+    src/main/c/xhook.c
+    src/main/c/xh_core.c
+    src/main/c/xh_elf.c
+    src/main/c/xh_log.c
+    src/main/c/xh_util.c
+    src/main/c/xh_version.c)
 
-        # Sets the library as a shared library.
-        SHARED
+target_include_directories(SignatureKiller PRIVATE
+    src/main/c/dobby/include)
 
-        # Provides a relative path to your source file(s).
-        src/main/c/mt_jni.c
-        src/main/c/xhook.c
-        src/main/c/xh_core.c
-        src/main/c/xh_elf.c
-        src/main/c/xh_log.c
-        src/main/c/xh_util.c
-        src/main/c/xh_version.c)
+find_library(log-lib log)
+find_library(dl-lib dl)
 
-find_library( # Sets the name of the path variable.
-        log-lib
-
-        # Specifies the name of the NDK library that
-        # you want CMake to locate.
-        log)
-
-target_link_libraries( # Specifies the target library.
-        SignatureKiller
-
-        # Links the target library to the log library
-        # included in the NDK.
-        ${log-lib})
+target_link_libraries(SignatureKiller
+    ${log-lib}
+    ${dl-lib}
+    Dobby)

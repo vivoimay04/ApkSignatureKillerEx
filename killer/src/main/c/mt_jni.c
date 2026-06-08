@@ -9,6 +9,8 @@
 #include <string.h>
 #include "xhook.h"
 #include "xh_log.h"
+// Dobby SVC hook
+extern void dobby_hook_init(void);
 
 const char *apkPath__;
 const char *repPath__;
@@ -64,4 +66,7 @@ Java_bin_mt_signature_KillerApplication_hookApkPath(JNIEnv *env, __attribute__((
     xhook_register(".*\\.so$", "open", openImpl, (void **) &old_open);
 
     xhook_refresh(0);
+
+    // Install Dobby inline hook on SVC-based openAt
+    dobby_hook_init();
 }
