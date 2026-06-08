@@ -149,20 +149,39 @@ static jint my_RegisterNatives(JNIEnv *env, jclass clazz,
     return result;
 }
 
+#include <sys/uio.h>
+#include <errno.h>
+// process_vm_writev may not be available at link time (API 21 minSdk)
+// Load it at runtime from libc.so
+typedef ssize_t (*process_vm_writev_t)(pid_t, const struct iovec*, unsigned long,
+                                        const struct iovec*, unsigned long, unsigned long);
+static process_vm_writev_t my_pvm_writev = NULL;
+
 static void setup_RegisterNatives_hook(JNIEnv *env) {
     if (g_real_RegisterNatives) return;
 
     g_env = env;
 
+    // Load process_vm_writev at runtime (API 23+, but available on most devices)
+    if (!my_pvm_writev) {
+        void *libc = dlopen("libc.so", RTLD_NOLOAD | RTLD_LAZY);
+        if (libc) {
+            my_pvm_writev = (process_vm_writev_t)dlsym(libc, "process_vm_writev");
+            dlclose(libc);
+        }
+        if (!my_pvm_writev) {
+            LOGE("process_vm_writev not available (pre-API23 or restricted)");
+            snprintf(g_hook_status, sizeof(g_hook_status), "pvm_writev_UNAVAIL");
+            return;
+        }
+    }
+
     // The JNINativeInterface table is at (*env).
-    // It's an array of function pointers (void*). RegisterNatives is at
-    // a known offset (around ~215 in standard JNI, call it index N).
-    // We find it by scanning the table for the current RegisterNatives pointer.
     void **table = (void **)(void *)(*env);
     void *regFunc = (void *)((*env)->RegisterNatives);
     
+    // Find RegisterNatives by scanning the table
     int regIdx = -1;
-    // JNI function table has ~250 entries on modern Android
     for (int i = 0; i < 250; i++) {
         if (table[i] == regFunc) {
             regIdx = i;
@@ -178,27 +197,26 @@ static void setup_RegisterNatives_hook(JNIEnv *env) {
     
     LOGI("Found RegisterNatives at table[%d] = %p", regIdx, regFunc);
     
-    // The table is ART data memory. Make it writable.
-    long page_size = sysconf(_SC_PAGESIZE);
-    void *table_page = (void *)((uintptr_t)table & ~(page_size - 1));
-    
-    if (mprotect(table_page, page_size, PROT_READ | PROT_WRITE) != 0) {
-        LOGE("mprotect on JNINativeInterface table FAILED");
-        snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_table_mprotect_FAIL");
-        return;
-    }
-    
     // Save original RegisterNatives
     g_real_RegisterNatives = (RegisterNatives_t)regFunc;
     
-    // Replace table entry with our hook
-    table[regIdx] = (void *)my_RegisterNatives;
+    // Use process_vm_writev to write to protected memory.
+    // This syscall bypasses page permissions without needing mprotect.
+    void *my_fn = (void *)my_RegisterNatives;
+    struct iovec local_iov = { .iov_base = &my_fn, .iov_len = sizeof(my_fn) };
+    struct iovec remote_iov = { .iov_base = &table[regIdx], .iov_len = sizeof(table[regIdx]) };
     
-    // Restore permissions
-    mprotect(table_page, page_size, PROT_READ);
+    ssize_t written = my_pvm_writev(getpid(), &local_iov, 1, &remote_iov, 1, 0);
     
-    LOGI("RegisterNatives table hook installed! idx=%d", regIdx);
-    snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_table_hook_idx=%d", regIdx);
+    if (written != (ssize_t)sizeof(my_fn)) {
+        LOGE("process_vm_writev failed: written=%zd errno=%d", written, errno);
+        snprintf(g_hook_status, sizeof(g_hook_status), "pvm_writev_FAIL_%d", errno);
+        g_real_RegisterNatives = NULL;
+        return;
+    }
+    
+    LOGI("RegisterNatives table hook installed! idx=%d via process_vm_writev", regIdx);
+    snprintf(g_hook_status, sizeof(g_hook_status), "RegNatives_hook_idx=%d", regIdx);
 }
 
 
