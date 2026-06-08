@@ -35,11 +35,8 @@ jobs:
 
       - name: Patch release signing
         run: |
-          # Add release signing config so assembleRelease works
-          cat >> app/build.gradle << 'SIGNEOF'
-
-          android.buildTypes.release.signingConfig android.signingConfigs.debug
-SIGNEOF
+          echo '' >> app/build.gradle
+          echo 'android.buildTypes.release.signingConfig android.signingConfigs.debug' >> app/build.gradle
 
       - name: Build
         run: |
