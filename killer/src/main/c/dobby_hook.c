@@ -16,7 +16,7 @@
 #include <jni.h>
 #include "xhook.h"
 #include "xh_log.h"
-#include "dobby/include/dobby.h"
+#include "dobby.h"
 
 // Global paths set by hookApkPath in mt_jni.c
 extern const char *apkPath__;
