@@ -105,19 +105,6 @@ static void install_hook_on(void *target) {
 }
 
 // ── Method 1: dlsym (name-based JNI lookup) ──
-static void try_dlsym(void) {
-    if (g_hook_installed) return;
-    void *target = dlsym(RTLD_DEFAULT, "Java_bin_mt_test_MainActivity_openAt");
-    if (target) {
-        LOGI("Method 1 success: found via dlsym at %p", target);
-        snprintf(g_hook_status, sizeof(g_hook_status), "dlsym_OK_%p", target);
-        install_hook_on(target);
-    } else {
-        LOGW("Method 1 failed: symbol not exported");
-        snprintf(g_hook_status, sizeof(g_hook_status), "dlsym_FAIL");
-    }
-}
-
 // ── Method 2: Hook RegisterNatives in JNINativeInterface table ──
 // The JNINativeInterface struct is allocated in process memory.
 // RegisterNatives offset in the function table (Android jni.h):
@@ -267,4 +254,117 @@ void inline_hook_init(JNIEnv *env) {
         if (pthread_create(&thread, NULL, poll_thread_impl, NULL) == 0)
             pthread_detach(thread);
     }
+}
+
+// ── Method 3: Parse libtest.so's ELF .dynsym directly from memory ──
+// Bypasses linker namespaces that prevent dlsym from finding the symbol.
+
+#include <elf.h>
+
+static void *find_symbol_in_elf(const char *lib_name, const char *sym_name) {
+    // Find the library in /proc/self/maps
+    FILE *maps = fopen("/proc/self/maps", "r");
+    if (!maps) return NULL;
+    
+    char line[1024];
+    unsigned long lib_start = 0, lib_end = 0;
+    int found_lib = 0;
+    
+    while (fgets(line, sizeof(line), maps)) {
+        if (strstr(line, lib_name) && strstr(line, "r-xp")) {  // executable segment
+            unsigned long start, end;
+            char perm[8];
+            sscanf(line, "%lx-%lx %4s", &start, &end, perm);
+            if (!found_lib || start < lib_start) {
+                lib_start = start;
+                lib_end = end;
+                found_lib = 1;
+            }
+        }
+    }
+    fclose(maps);
+    
+    if (!found_lib) {
+        LOGW("find_symbol_in_elf: %s not mapped", lib_name);
+        return NULL;
+    }
+    
+    // The ELF header is at lib_start
+    Elf64_Ehdr *ehdr = (Elf64_Ehdr *)lib_start;
+    
+    if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) {
+        LOGW("find_symbol_in_elf: bad ELF magic at %p", (void*)lib_start);
+        return NULL;
+    }
+    
+    // Find .dynsym and .dynstr sections
+    Elf64_Shdr *shdr = (Elf64_Shdr *)(lib_start + ehdr->e_shoff);
+    int shnum = ehdr->e_shnum;
+    int shstrndx = ehdr->e_shstrndx;
+    
+    // Get section name string table
+    char *shstrtab = (char *)(lib_start + shdr[shstrndx].sh_addr);
+    
+    Elf64_Shdr *dynsym_shdr = NULL;
+    Elf64_Shdr *dynstr_shdr = NULL;
+    
+    for (int i = 0; i < shnum; i++) {
+        char *name = shstrtab + shdr[i].sh_name;
+        if (strcmp(name, ".dynsym") == 0) dynsym_shdr = &shdr[i];
+        if (strcmp(name, ".dynstr") == 0) dynstr_shdr = &shdr[i];
+    }
+    
+    if (!dynsym_shdr || !dynstr_shdr) {
+        LOGW("find_symbol_in_elf: no .dynsym or .dynstr in %s", lib_name);
+        return NULL;
+    }
+    
+    Elf64_Sym *dynsym = (Elf64_Sym *)(lib_start + dynsym_shdr->sh_addr);
+    int nsyms = dynsym_shdr->sh_size / sizeof(Elf64_Sym);
+    char *dynstr = (char *)(lib_start + dynstr_shdr->sh_addr);
+    
+    for (int i = 0; i < nsyms; i++) {
+        // Check both GLOBAL and WEAK (not just GLOBAL, since dlsym also returns WEAK)
+        int bind = ELF64_ST_BIND(dynsym[i].st_info);
+        if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
+        
+        // Skip undefined symbols
+        if (dynsym[i].st_shndx == SHN_UNDEF) continue;
+        
+        char *name = dynstr + dynsym[i].st_name;
+        if (strcmp(name, sym_name) == 0) {
+            // Found! Return the function address
+            void *addr = (void *)(lib_start + dynsym[i].st_value);
+            LOGI("Method 3: Found %s in %s ELF at %p (offset 0x%llx)",
+                 sym_name, lib_name, addr, (unsigned long long)dynsym[i].st_value);
+            snprintf(g_hook_status, sizeof(g_hook_status), "ELF_dynsym_OK_%p", addr);
+            return addr;
+        }
+    }
+    
+    LOGW("find_symbol_in_elf: %s not found in %s .dynsym", sym_name, lib_name);
+    return NULL;
+}
+
+// ── Update try_dlsym to also try ELF parsing ──
+
+static void try_dlsym(void) {
+    if (g_hook_installed) return;
+    void *target = dlsym(RTLD_DEFAULT, "Java_bin_mt_test_MainActivity_openAt");
+    if (target) {
+        LOGI("Method 1 success: found via dlsym at %p", target);
+        snprintf(g_hook_status, sizeof(g_hook_status), "dlsym_OK_%p", target);
+        install_hook_on(target);
+        return;
+    }
+    LOGW("Method 1 (dlsym) failed");
+    
+    // Try Method 3: parse ELF .dynsym directly
+    target = find_symbol_in_elf("libtest.so", "Java_bin_mt_test_MainActivity_openAt");
+    if (target) {
+        install_hook_on(target);
+        return;
+    }
+    LOGW("Method 3 (ELF .dynsym) also failed");
+    snprintf(g_hook_status, sizeof(g_hook_status), "dlsym_ELF_BOTH_FAIL");
 }
