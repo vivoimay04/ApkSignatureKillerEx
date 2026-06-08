@@ -22,21 +22,24 @@ jobs:
       - name: Setup Android SDK
         run: |
           SDK_ROOT="/usr/local/lib/android/sdk"
-
-          # Use local.properties so AGP doesn't fight with env vars
           echo "sdk.dir=$SDK_ROOT" > local.properties
-          echo "ndk.dir=$SDK_ROOT/ndk/24.0.8215888" >> local.properties
-
-          # Show what's available
-          echo "=== SDK ==="
           ls "$SDK_ROOT/platforms/" 2>/dev/null || echo "no platforms"
           ls "$SDK_ROOT/build-tools/" 2>/dev/null || echo "no build-tools"
           ls "$SDK_ROOT/ndk/" 2>/dev/null || echo "no ndk"
 
-      - name: Install NDK
+      - name: Install NDK & dependencies
         run: |
           yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager \
-            "ndk;24.0.8215888" "cmake;3.22.1" 2>&1 | tail -3
+            "ndk;24.0.8215888" "cmake;3.22.1" \
+            "platforms;android-32" "build-tools;33.0.2" 2>&1 | tail -3
+
+      - name: Patch release signing
+        run: |
+          # Add release signing config so assembleRelease works
+          cat >> app/build.gradle << 'SIGNEOF'
+
+          android.buildTypes.release.signingConfig android.signingConfigs.debug
+SIGNEOF
 
       - name: Build
         run: |
